@@ -1,388 +1,404 @@
 #!/bin/bash
-# HexXVPN Decryptor Tool for Termux
-# Created for educational purposes
+# HexXVPN Configuration Decryptor
+# GitHub: https://github.com/MullaDev/HexXVPN-Decryptor
+# Author: MullaDev
 
-clear
-echo "=========================================="
-echo "      HexXVPN Configuration Decryptor"
-echo "=========================================="
-echo
+set -e
 
-# Check if required packages are installed
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+HEXXVPN_URL="https://jezvpn.xyz/api/app?json=e37e2c916bd0328ba9d6"
+PASSWORD="HexXVPNPass"
+
+# Print colored output
+print_status() {
+    echo -e "${GREEN}[+]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[-]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[*]${NC} $1"
+}
+
+# Banner
+show_banner() {
+    clear
+    echo -e "${BLUE}"
+    echo "=========================================="
+    echo "      HexXVPN Configuration Decryptor"
+    echo "           GitHub: MullaDev"
+    echo "=========================================="
+    echo -e "${NC}"
+}
+
+# Check dependencies
 check_dependencies() {
-    echo "[*] Checking dependencies..."
+    print_info "Checking dependencies..."
     
+    local missing_deps=()
+    
+    # Check for Python3
     if ! command -v python3 &> /dev/null; then
-        echo "[!] Python3 not found. Installing..."
-        pkg install python3 -y
+        missing_deps+=("python3")
     fi
     
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        missing_deps+=("curl")
+    fi
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        print_warning "Missing dependencies: ${missing_deps[*]}"
+        print_info "Installing missing dependencies..."
+        pkg update -y
+        pkg install -y "${missing_deps[@]}"
+    fi
+    
+    # Check Python modules
     if ! python3 -c "import requests" &> /dev/null; then
-        echo "[!] Python requests module not found. Installing..."
+        print_info "Installing Python requests module..."
         pip install requests
     fi
     
-    if ! python3 -c "import base64" &> /dev/null; then
-        echo "[!] Python base64 module not found..."
-    fi
-    
-    if ! command -v curl &> /dev/null; then
-        echo "[!] curl not found. Installing..."
-        pkg install curl -y
-    fi
-    
-    echo "[+] Dependencies checked"
+    print_status "Dependencies checked and installed"
 }
 
-# Download and decrypt the configuration
-decrypt_config() {
-    echo
-    echo "[*] Downloading configuration from HexXVPN server..."
+# Download configuration
+download_config() {
+    print_info "Downloading configuration from HexXVPN..."
     
-    # The update URL
-    UPDATE_URL="https://jezvpn.xyz/api/app?json=e37e2c916bd0328ba9d6"
-    
-    # Download the encrypted JSON
-    if curl -s -o encrypted_config.json "$UPDATE_URL"; then
-        echo "[+] Configuration downloaded successfully"
+    if curl -s -o encrypted_config.json "$HEXXVPN_URL"; then
+        print_status "Configuration downloaded successfully"
+        
+        # Check if download was successful
+        if [ -s "encrypted_config.json" ]; then
+            local file_size=$(wc -c < encrypted_config.json)
+            print_info "File size: $file_size bytes"
+        else
+            print_error "Downloaded file is empty"
+            return 1
+        fi
     else
-        echo "[!] Failed to download configuration"
-        exit 1
+        print_error "Failed to download configuration"
+        return 1
     fi
-    
-    echo
-    echo "[*] Creating decryption script..."
-    
-    # Create Python decryption script
+}
+
+# Create decryption script
+create_decrypt_script() {
     cat > hexvpn_decrypt.py << 'EOF'
-import requests
-import base64
+#!/usr/bin/env python3
+"""
+HexXVPN Configuration Decryptor
+Decrypts HexXVPN configuration using AES-CBC with password 'HexXVPNPass'
+"""
+
 import json
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+import base64
 import hashlib
+import sys
+import os
 
-def decrypt_aes_cbc(encrypted_text, password):
-    """
-    Decrypt AES-CBC encrypted text using HexXVPN method
-    """
-    try:
-        # Fixed IV from the decompiled code
-        iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import unpad
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+
+class HexXVPNDecryptor:
+    def __init__(self, password="HexXVPNPass"):
+        self.password = password
+        # Fixed IV from decompiled code
+        self.iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 
+                         0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
         
-        # Generate key using MD5 hash of password (as shown in decompiled code)
-        key = hashlib.md5(password.encode('utf-8')).digest()
-        
-        # Decode Base64
-        encrypted_bytes = base64.b64decode(encrypted_text)
-        
-        # Create AES cipher
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        
-        # Decrypt
-        decrypted = cipher.decrypt(encrypted_bytes)
-        
-        # Unpad and decode
-        decrypted = unpad(decrypted, AES.block_size)
-        
-        return decrypted.decode('utf-8')
+    def decrypt_aes_cbc(self, encrypted_text):
+        """Decrypt AES-CBC encrypted text"""
+        if not CRYPTO_AVAILABLE:
+            return f"[ERROR: Crypto library not available] - {encrypted_text}"
+            
+        try:
+            # Generate key using MD5
+            key = hashlib.md5(self.password.encode('utf-8')).digest()
+            
+            # Decode Base64
+            encrypted_bytes = base64.b64decode(encrypted_text)
+            
+            # Create AES cipher
+            cipher = AES.new(key, AES.MODE_CBC, self.iv)
+            
+            # Decrypt
+            decrypted = cipher.decrypt(encrypted_bytes)
+            
+            # Remove padding
+            try:
+                decrypted = unpad(decrypted, AES.block_size)
+            except ValueError:
+                # Manual padding removal as fallback
+                padding_length = decrypted[-1]
+                if 0 < padding_length <= 16:
+                    decrypted = decrypted[:-padding_length]
+            
+            return decrypted.decode('utf-8', errors='ignore')
+            
+        except Exception as e:
+            return f"[DECRYPTION_ERROR: {str(e)}] - {encrypted_text}"
     
-    except Exception as e:
-        return f"[DECRYPTION_ERROR: {str(e)}]"
-
-def decrypt_json_field(data, password):
-    """
-    Recursively decrypt all encrypted fields in JSON
-    """
-    if isinstance(data, dict):
-        decrypted_data = {}
-        for key, value in data.items():
-            if isinstance(value, str) and len(value) > 10 and '=' in value:
-                # Likely encrypted Base64 string
-                try:
-                    decrypted_value = decrypt_aes_cbc(value, password)
+    def decrypt_json(self, data):
+        """Recursively decrypt all encrypted fields in JSON"""
+        if isinstance(data, dict):
+            decrypted_data = {}
+            for key, value in data.items():
+                if isinstance(value, str) and self._looks_encrypted(value):
+                    decrypted_value = self.decrypt_aes_cbc(value)
                     decrypted_data[key] = decrypted_value
-                    print(f"[+] Decrypted: {key} -> {decrypted_value[:50]}...")
-                except:
-                    decrypted_data[key] = value
-            else:
-                decrypted_data[key] = decrypt_json_field(value, password)
-        return decrypted_data
+                    if not decrypted_value.startswith("[DECRYPTION_ERROR"):
+                        print(f"  ✅ {key}")
+                    else:
+                        print(f"  ❌ {key} - Failed")
+                else:
+                    decrypted_data[key] = self.decrypt_json(value)
+            return decrypted_data
+        
+        elif isinstance(data, list):
+            return [self.decrypt_json(item) for item in data]
+        
+        else:
+            return data
     
-    elif isinstance(data, list):
-        return [decrypt_json_field(item, password) for item in data]
+    def _looks_encrypted(self, text):
+        """Check if text looks like encrypted Base64"""
+        if not isinstance(text, str):
+            return False
+        if len(text) < 20:
+            return False
+        try:
+            # Check if it's valid Base64 and has typical encrypted length
+            decoded = base64.b64decode(text)
+            return len(decoded) % 16 == 0  # AES block size
+        except:
+            return False
     
-    else:
-        return data
+    def analyze_config(self, data):
+        """Analyze the configuration structure"""
+        print("\n=== CONFIGURATION ANALYSIS ===")
+        
+        if 'Version' in data:
+            print(f"Version: {data['Version']}")
+        
+        if 'Servers' in data:
+            print(f"Number of Servers: {len(data['Servers'])}")
+            for i, server in enumerate(data['Servers'][:3]):  # Show first 3
+                print(f"  Server {i+1}: {server.get('Name', 'Unknown')}")
+                print(f"    Flag: {server.get('Flag', 'Unknown')}")
+                if i >= 2 and len(data['Servers']) > 3:
+                    print(f"    ... and {len(data['Servers']) - 3} more servers")
+                    break
+        
+        if 'Tweaks' in data:
+            print(f"Number of Tweaks: {len(data['Tweaks'])}")
+            for i, tweak in enumerate(data['Tweaks'][:3]):  # Show first 3
+                print(f"  Tweak {i+1}: {tweak.get('Name', 'Unknown')}")
+                print(f"    Mode: {tweak.get('Mode', 'Unknown')}")
+                if i >= 2 and len(data['Tweaks']) > 3:
+                    print(f"    ... and {len(data['Tweaks']) - 3} more tweaks")
+                    break
 
 def main():
-    password = "HexXVPNPass"
+    print("HexXVPN Configuration Decryptor")
+    print("================================\n")
+    
+    if not CRYPTO_AVAILABLE:
+        print("❌ Crypto library not available!")
+        print("Installing required library...")
+        os.system("pip install pycryptodome")
+        print("Please run the script again.")
+        return
+    
+    decryptor = HexXVPNDecryptor()
     
     try:
         # Read encrypted config
         with open('encrypted_config.json', 'r', encoding='utf-8') as f:
             encrypted_data = json.load(f)
         
-        print(f"[*] Starting decryption with password: {password}")
-        print("[*] This may take a while for large configurations...")
-        print()
+        print("📥 Loaded encrypted configuration")
+        print("🔓 Starting decryption process...\n")
         
+        # Analyze before decryption
+        decryptor.analyze_config(encrypted_data)
+        
+        print("\n🔄 Decrypting fields...")
         # Decrypt the entire JSON
-        decrypted_data = decrypt_json_field(encrypted_data, password)
+        decrypted_data = decryptor.decrypt_json(encrypted_data)
         
         # Save decrypted config
         with open('decrypted_config.json', 'w', encoding='utf-8') as f:
             json.dump(decrypted_data, f, indent=2, ensure_ascii=False)
         
-        print()
-        print("[+] Decryption completed successfully!")
-        print("[+] Decrypted configuration saved to: decrypted_config.json")
+        print(f"\n✅ Decryption completed!")
+        print("💾 Decrypted configuration saved to: decrypted_config.json")
         
-        # Display some key decrypted values
-        print()
-        print("=== KEY DECRYPTED VALUES ===")
+        # Show summary
+        print("\n=== DECRYPTION SUMMARY ===")
         if 'Version' in decrypted_data:
             print(f"Version: {decrypted_data.get('Version', 'N/A')}")
         if 'Message' in decrypted_data:
-            print(f"Message: {decrypted_data.get('Message', 'N/A')[:100]}...")
-        if 'Servers' in decrypted_data and len(decrypted_data['Servers']) > 0:
-            print(f"Servers Count: {len(decrypted_data['Servers'])}")
-        if 'Tweaks' in decrypted_data:
-            print(f"Tweaks Count: {len(decrypted_data['Tweaks'])}")
+            msg = decrypted_data.get('Message', 'N/A')
+            print(f"Message Preview: {msg[:80]}...")
         
+    except FileNotFoundError:
+        print("❌ encrypted_config.json not found!")
+        print("Please download the configuration first.")
+    except json.JSONDecodeError:
+        print("❌ Invalid JSON format in encrypted_config.json")
     except Exception as e:
-        print(f"[!] Error during decryption: {str(e)}")
+        print(f"❌ Error during decryption: {str(e)}")
 
 if __name__ == "__main__":
     main()
 EOF
 
-    # Alternative simpler decryption script if Crypto is not available
-    cat > hexvpn_simple_decrypt.py << 'EOF'
-import requests
-import base64
-import json
-import hashlib
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
-import os
+    chmod +x hexvpn_decrypt.py
+    print_status "Decryption script created"
+}
 
-def simple_decrypt(encrypted_text, password):
-    """
-    Simple decryption function for HexXVPN
-    """
-    try:
-        # Fixed IV
-        iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
-        
-        # Generate key
-        key = hashlib.md5(password.encode()).digest()
-        
-        # Decode Base64
-        encrypted_data = base64.b64decode(encrypted_text)
-        
-        # Decrypt
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-        decryptor = cipher.decryptor()
-        decrypted = decryptor.update(encrypted_data) + decryptor.finalize()
-        
-        # Unpad
-        unpadder = padding.PKCS7(128).unpadder()
-        unpadded = unpadder.update(decrypted) + unpadder.finalize()
-        
-        return unpadded.decode('utf-8')
+# Install crypto library
+install_crypto_lib() {
+    print_info "Checking for crypto library..."
     
-    except Exception as e:
-        return f"[ERROR: {str(e)}]"
-
-def main():
-    password = "HexXVPNPass"
+    if python3 -c "from Crypto.Cipher import AES" &> /dev/null; then
+        print_status "Crypto library already installed"
+        return 0
+    fi
     
-    try:
-        with open('encrypted_config.json', 'r') as f:
-            data = json.load(f)
-        
-        print("[*] Simple decryption test...")
-        
-        # Test decrypt a few fields
-        test_fields = ['Version', 'Message', 'DefUpdateURL']
-        
-        for field in test_fields:
-            if field in data and isinstance(data[field], str):
-                decrypted = simple_decrypt(data[field], password)
-                print(f"{field}: {decrypted}")
-        
-    except Exception as e:
-        print(f"Error: {e}")
+    print_info "Installing pycryptodome..."
+    if pip install pycryptodome; then
+        print_status "pycryptodome installed successfully"
+        return 0
+    fi
+    
+    print_warning "pycryptodome installation failed, trying pycrypto..."
+    if pip install pycrypto; then
+        print_status "pycrypto installed successfully"
+        return 0
+    fi
+    
+    print_error "Failed to install crypto libraries"
+    return 1
+}
 
-if __name__ == "__main__":
-    main()
-EOF
-
-    echo "[+] Decryption scripts created"
+# Show file information
+show_file_info() {
     echo
-    echo "[*] Installing required Python cryptography library..."
+    print_info "=== FILE INFORMATION ==="
     
-    # Install cryptography library
-    pip install cryptography
-    
-    echo
-    echo "[*] Starting decryption process..."
-    echo
-    
-    # Run the decryption
-    python3 hexvpn_decrypt.py
-    
-    if [ $? -eq 0 ]; then
-        echo
-        echo "[+] Decryption completed!"
-        echo "[+] Files created:"
-        echo "    - encrypted_config.json (original encrypted config)"
-        echo "    - decrypted_config.json (decrypted configuration)"
-        echo "    - hexvpn_decrypt.py (decryption script)"
+    if [ -f "encrypted_config.json" ]; then
+        local enc_size=$(wc -c < encrypted_config.json)
+        print_info "encrypted_config.json: $enc_size bytes"
     else
-        echo
-        echo "[!] Main decryption failed, trying simple method..."
-        python3 hexvpn_simple_decrypt.py
+        print_warning "encrypted_config.json: Not found"
     fi
-}
-
-# Display server information
-show_server_info() {
+    
     if [ -f "decrypted_config.json" ]; then
-        echo
-        echo "=== SERVER INFORMATION ==="
-        python3 - << EOF
-import json
-
-try:
-    with open('decrypted_config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    if 'Servers' in data:
-        print(f"Total Servers: {len(data['Servers'])}")
-        print()
-        for i, server in enumerate(data['Servers'][:5], 1):  # Show first 5 servers
-            print(f"Server {i}: {server.get('Name', 'N/A')}")
-            print(f"  Flag: {server.get('Flag', 'N/A')}")
-            print(f"  Info: {server.get('Info', 'N/A')}")
-            print()
-    
-    if 'Tweaks' in data:
-        print(f"Total Tweaks/Configs: {len(data['Tweaks'])}")
-        print()
-        for i, tweak in enumerate(data['Tweaks'][:5], 1):  # Show first 5 tweaks
-            print(f"Tweak {i}: {tweak.get('Name', 'N/A')}")
-            print(f"  Mode: {tweak.get('Mode', 'N/A')}")
-            print(f"  Info: {tweak.get('Info', 'N/A')[:50]}...")
-            print()
-
-except Exception as e:
-    print(f"Error reading decrypted file: {e}")
-EOF
-    fi
-}
-
-# Main menu
-main_menu() {
-    while true; do
-        echo
-        echo "=== HEXXVPN DECRYPTOR MENU ==="
-        echo "1) Install Dependencies"
-        echo "2) Download & Decrypt Configuration"
-        echo "3) Show Server Information"
-        echo "4) View Decrypted Config"
-        echo "5) Cleanup Files"
-        echo "6) Exit"
-        echo
-        read -p "Select option [1-6]: " choice
+        local dec_size=$(wc -c < decrypted_config.json)
+        print_info "decrypted_config.json: $dec_size bytes"
         
-        case $choice in
-            1)
-                check_dependencies
-                ;;
-            2)
-                decrypt_config
-                ;;
-            3)
-                show_server_info
-                ;;
-            4)
-                if [ -f "decrypted_config.json" ]; then
-                    echo
-                    echo "=== DECRYPTED CONFIGURATION ==="
-                    python3 -c "
+        # Show preview of decrypted content
+        echo
+        print_info "=== DECRYPTED CONTENT PREVIEW ==="
+        python3 -c "
 import json
 try:
     with open('decrypted_config.json', 'r') as f:
         data = json.load(f)
-    print(json.dumps(data, indent=2, ensure_ascii=False))
+    print('Version:', data.get('Version', 'N/A'))
+    print('Servers:', len(data.get('Servers', [])))
+    print('Tweaks:', len(data.get('Tweaks', [])))
+    if 'Servers' in data and data['Servers']:
+        print('First Server:', data['Servers'][0].get('Name', 'N/A'))
 except Exception as e:
-    print(f'Error: {e}')
-" | head -50
-                    echo "... (truncated)"
-                else
-                    echo "[!] No decrypted configuration found. Run option 2 first."
-                fi
-                ;;
-            5)
-                echo "[*] Cleaning up files..."
-                rm -f encrypted_config.json decrypted_config.json hexvpn_decrypt.py hexvpn_simple_decrypt.py
-                echo "[+] Files cleaned up"
-                ;;
-            6)
-                echo "[+] Exiting HexXVPN Decryptor"
-                exit 0
-                ;;
-            *)
-                echo "[!] Invalid option"
-                ;;
-        esac
-    done
-}
-
-# Installation script for Termux
-installation_script() {
-    echo "=========================================="
-    echo "    HexXVPN Decryptor - Installation"
-    echo "=========================================="
-    echo
-    echo "[*] This will install all required dependencies"
-    echo
-    
-    # Update and upgrade
-    echo "[*] Updating packages..."
-    pkg update && pkg upgrade -y
-    
-    # Install basic tools
-    echo "[*] Installing basic tools..."
-    pkg install curl wget python3 nano -y
-    
-    # Install Python packages
-    echo "[*] Installing Python packages..."
-    pip install requests cryptography
-    
-    # Upgrade pip
-    echo "[*] Upgrading pip..."
-    python3 -m pip install --upgrade pip
-    
-    echo
-    echo "[+] Installation completed!"
-    echo "[+] You can now run the decryptor script"
-    echo
-}
-
-# Check if script is being run directly
-if [ "$1" == "install" ]; then
-    installation_script
-else
-    # Check if we're in Termux
-    if [ -d "/data/data/com.termux/files/usr" ]; then
-        echo "[+] Running in Termux environment"
-        main_menu
+    print('Error:', e)
+"
     else
-        echo "[!] This script is designed for Termux"
-        echo "[*] You can still try to run it if you have Python installed"
-        main_menu
+        print_warning "decrypted_config.json: Not found"
     fi
-fi
+}
+
+# Cleanup files
+cleanup_files() {
+    print_info "Cleaning up temporary files..."
+    rm -f encrypted_config.json decrypted_config.json hexvpn_decrypt.py
+    print_status "Cleanup completed"
+}
+
+# Main execution
+main() {
+    show_banner
+    
+    case "${1:-}" in
+        "install")
+            check_dependencies
+            install_crypto_lib
+            ;;
+        "download")
+            download_config
+            ;;
+        "decrypt")
+            if [ ! -f "encrypted_config.json" ]; then
+                download_config
+            fi
+            create_decrypt_script
+            install_crypto_lib
+            python3 hexvpn_decrypt.py
+            show_file_info
+            ;;
+        "clean")
+            cleanup_files
+            ;;
+        "info")
+            show_file_info
+            ;;
+        "all")
+            check_dependencies
+            install_crypto_lib
+            download_config
+            create_decrypt_script
+            python3 hexvpn_decrypt.py
+            show_file_info
+            ;;
+        *)
+            echo "Usage: $0 {install|download|decrypt|clean|info|all}"
+            echo
+            echo "Commands:"
+            echo "  install  - Install dependencies only"
+            echo "  download - Download configuration only"
+            echo "  decrypt  - Decrypt downloaded configuration"
+            echo "  clean    - Clean up generated files"
+            echo "  info     - Show file information"
+            echo "  all      - Run complete process (download + decrypt)"
+            echo
+            echo "Examples:"
+            echo "  $0 all        # Complete process"
+            echo "  $0 download   # Download config only"
+            echo "  $0 decrypt    # Decrypt existing config"
+            ;;
+    esac
+}
+
+# Run main function with all arguments
+main "$@"
