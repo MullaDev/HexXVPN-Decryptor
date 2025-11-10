@@ -67,16 +67,10 @@ check_dependencies() {
         pkg install -y "${missing_deps[@]}"
     fi
     
-    # Check Python modules
-    if ! python3 -c "import requests" &> /dev/null; then
-        print_info "Installing Python requests module..."
-        pip install requests
-    fi
-    
     print_status "Dependencies checked and installed"
 }
 
-# Download and extract configuration
+# Download and process configuration
 download_config() {
     print_info "Downloading configuration from HexXVPN..."
     
@@ -89,8 +83,8 @@ download_config() {
             local file_size=$(wc -c < raw_response.txt)
             print_info "Raw file size: $file_size bytes"
             
-            # Extract JSON from the response
-            extract_json_from_response
+            # Process the base64 response
+            process_base64_response
         else
             print_error "Downloaded file is empty"
             return 1
@@ -101,138 +95,195 @@ download_config() {
     fi
 }
 
-# Extract JSON from HTML response
-extract_json_from_response() {
-    print_info "Extracting JSON from response..."
+# Process the base64 encoded response
+process_base64_response() {
+    print_info "Processing base64 encoded response..."
     
-    # Create Python script to extract JSON
-    cat > extract_json.py << 'EOF'
+    # Create Python script to handle the base64 data
+    cat > process_response.py << 'EOF'
 #!/usr/bin/env python3
-import re
+import base64
 import json
-import sys
+import zlib
+import gzip
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+import hashlib
 
-def extract_json_from_html(html_content):
-    """Extract JSON data from HTML response"""
+def try_decode_base64(data):
+    """Try to decode the base64 data"""
+    try:
+        # Remove any whitespace or newlines
+        data = data.strip()
+        
+        # Try standard base64 decode
+        decoded = base64.b64decode(data)
+        print(f"Base64 decoded successfully: {len(decoded)} bytes")
+        return decoded
+    except Exception as e:
+        print(f"Base64 decode failed: {e}")
+        return None
+
+def try_decompress(data):
+    """Try different decompression methods"""
+    # Try gzip
+    try:
+        decompressed = gzip.decompress(data)
+        print(f"Gzip decompressed: {len(decompressed)} bytes")
+        return decompressed
+    except:
+        pass
     
-    # Method 1: Look for JSON between script tags
-    script_pattern = r'<script[^>]*>\s*window\.config\s*=\s*({.*?})\s*;\s*</script>'
-    match = re.search(script_pattern, html_content, re.DOTALL)
+    # Try zlib
+    try:
+        decompressed = zlib.decompress(data)
+        print(f"Zlib decompressed: {len(decompressed)} bytes")
+        return decompressed
+    except:
+        pass
     
-    if match:
-        print("Found JSON in script tag")
-        return match.group(1)
+    # Try raw zlib (with different window bits)
+    try:
+        decompressed = zlib.decompress(data, -zlib.MAX_WBITS)
+        print(f"Raw zlib decompressed: {len(decompressed)} bytes")
+        return decompressed
+    except:
+        pass
     
-    # Method 2: Look for any JSON-like structure
-    json_pattern = r'\{[^{}]*"[^"]*"\s*:\s*("[^"]*"|\d+|true|false|null)[^{}]*\}'
-    matches = re.finditer(json_pattern, html_content)
-    
-    for match in matches:
+    print("No compression detected, using raw data")
+    return data
+
+def decrypt_aes_cbc(encrypted_data, password="HexXVPNPass"):
+    """Decrypt AES-CBC encrypted data"""
+    try:
+        # Fixed IV from decompiled code
+        iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 
+                    0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
+        
+        # Generate key using MD5
+        key = hashlib.md5(password.encode('utf-8')).digest()
+        
+        # Create AES cipher
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        
+        # Decrypt
+        decrypted = cipher.decrypt(encrypted_data)
+        
+        # Remove padding
         try:
-            json_data = json.loads(match.group())
-            # Check if it has expected structure
-            if 'Version' in json_data or 'Servers' in json_data:
-                print("Found valid JSON structure")
-                return match.group()
-        except:
-            continue
-    
-    # Method 3: Try to find the encrypted JSON directly
-    encrypted_pattern = r'\"encrypted_data\"\s*:\s*\"([^\"]+)\"'
-    match = re.search(encrypted_pattern, html_content)
-    if match:
-        print("Found encrypted data field")
-        return f'{{"encrypted_data": "{match.group(1)}"}}'
-    
-    return None
+            decrypted = unpad(decrypted, AES.block_size)
+        except ValueError:
+            # Manual padding removal as fallback
+            padding_length = decrypted[-1]
+            if 0 < padding_length <= 16:
+                decrypted = decrypted[:-padding_length]
+        
+        return decrypted
+    except Exception as e:
+        print(f"AES decryption failed: {e}")
+        return None
 
 def main():
     try:
+        # Read the raw response
         with open('raw_response.txt', 'r', encoding='utf-8', errors='ignore') as f:
-            html_content = f.read()
+            raw_data = f.read().strip()
         
-        print(f"Read {len(html_content)} characters from raw response")
+        print(f"Read {len(raw_data)} characters from raw response")
+        print(f"First 100 chars: {raw_data[:100]}")
         
-        # Try to extract JSON
-        json_data = extract_json_from_html(html_content)
+        # Step 1: Decode base64
+        decoded_data = try_decode_base64(raw_data)
+        if not decoded_data:
+            print("Failed to decode base64")
+            return
         
-        if json_data:
-            # Save the extracted JSON
-            with open('encrypted_config.json', 'w', encoding='utf-8') as f:
-                f.write(json_data)
-            print("Successfully extracted JSON data")
+        # Step 2: Try to decompress
+        decompressed_data = try_decompress(decoded_data)
+        
+        # Step 3: Try to decrypt
+        print("Attempting decryption...")
+        decrypted_data = decrypt_aes_cbc(decompressed_data)
+        
+        if decrypted_data:
+            print(f"Decryption successful: {len(decrypted_data)} bytes")
             
-            # Try to parse and pretty-print
+            # Try to parse as JSON
             try:
-                parsed = json.loads(json_data)
+                json_data = json.loads(decrypted_data.decode('utf-8'))
+                print("Successfully parsed as JSON")
+                
+                # Save the JSON
                 with open('encrypted_config.json', 'w', encoding='utf-8') as f:
-                    json.dump(parsed, f, indent=2, ensure_ascii=False)
-                print("JSON is valid and has been formatted")
-            except Exception as e:
-                print(f"JSON is not valid: {e}")
-                print("Saving raw extracted data")
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+                print("Saved as encrypted_config.json")
+                
+            except json.JSONDecodeError:
+                print("Decrypted data is not JSON, saving as raw text")
+                with open('decrypted_raw.txt', 'wb') as f:
+                    f.write(decrypted_data)
+                print("Saved as decrypted_raw.txt")
+                
+                # Try to extract JSON from the decrypted data
+                try:
+                    text_data = decrypted_data.decode('utf-8', errors='ignore')
+                    # Look for JSON pattern
+                    import re
+                    json_pattern = r'\{[^{}]*("[^"]*"\s*:\s*("[^"]*"|\d+|true|false|null)[^{}]*)*\}'
+                    matches = re.finditer(json_pattern, text_data, re.DOTALL)
+                    
+                    for match in matches:
+                        try:
+                            potential_json = json.loads(match.group())
+                            if isinstance(potential_json, dict) and ('Version' in potential_json or 'Servers' in potential_json):
+                                print("Found JSON structure in decrypted data!")
+                                with open('encrypted_config.json', 'w', encoding='utf-8') as f:
+                                    json.dump(potential_json, f, indent=2, ensure_ascii=False)
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    print(f"Error processing decrypted data: {e}")
         else:
-            print("No JSON data found in response")
-            print("First 500 characters of response:")
-            print(html_content[:500])
-            
+            print("Decryption failed, trying to process as direct JSON...")
+            # Maybe it's already JSON after decompression?
+            try:
+                json_data = json.loads(decompressed_data.decode('utf-8'))
+                print("Decompressed data is JSON!")
+                with open('encrypted_config.json', 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+            except:
+                print("Decompressed data is not JSON either")
+                # Save the decompressed data for analysis
+                with open('decompressed.bin', 'wb') as f:
+                    f.write(decompressed_data)
+                print("Saved decompressed data as decompressed.bin for analysis")
+        
     except Exception as e:
         print(f"Error processing response: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
 EOF
 
-    python3 extract_json.py
+    python3 process_response.py
     
-    # Check if extraction was successful
+    # Clean up
+    rm -f process_response.py
+    
     if [ -f "encrypted_config.json" ] && [ -s "encrypted_config.json" ]; then
         local json_size=$(wc -c < encrypted_config.json)
-        print_status "JSON extracted successfully - Size: $json_size bytes"
-        rm -f raw_response.txt extract_json.py
+        print_status "Configuration processed successfully - Size: $json_size bytes"
+        rm -f raw_response.txt
     else
-        print_warning "Could not extract JSON, checking raw response structure..."
-        analyze_raw_response
+        print_warning "Could not process configuration as expected"
+        print_info "Check decrypted_raw.txt or decompressed.bin for manual analysis"
     fi
 }
 
-# Analyze raw response structure
-analyze_raw_response() {
-    print_info "Analyzing raw response structure..."
-    
-    python3 -c "
-import re
-try:
-    with open('raw_response.txt', 'r', encoding='utf-8', errors='ignore') as f:
-        content = f.read()
-    
-    print('Response length:', len(content))
-    print('First 200 chars:', content[:200])
-    print('Last 200 chars:', content[-200:])
-    
-    # Look for common patterns
-    if '<html' in content.lower():
-        print('Contains HTML tags')
-    if '<script' in content.lower():
-        print('Contains script tags')
-    if 'json' in content.lower():
-        print('Contains JSON references')
-    
-    # Look for base64-like strings
-    import base64
-    base64_pattern = r'[A-Za-z0-9+/]{20,}={0,2}'
-    base64_matches = re.findall(base64_pattern, content)
-    if base64_matches:
-        print(f'Found {len(base64_matches)} base64-like strings')
-        for match in base64_matches[:3]:
-            print(f'  Sample: {match[:50]}...')
-    
-except Exception as e:
-    print(f'Analysis error: {e}')
-"
-}
-
-# Create decryption script
+# Create the main decryption script
 create_decrypt_script() {
     cat > hexvpn_decrypt.py << 'EOF'
 #!/usr/bin/env python3
@@ -302,7 +353,7 @@ class HexXVPNDecryptor:
                     decrypted_value = self.decrypt_aes_cbc(value)
                     decrypted_data[key] = decrypted_value
                     if not decrypted_value.startswith("[DECRYPTION_ERROR"):
-                        print(f"  ✅ {key}")
+                        print(f"  ✅ {key}: {decrypted_value[:50]}...")
                     else:
                         print(f"  ❌ {key} - Failed")
                 else:
@@ -333,30 +384,41 @@ class HexXVPNDecryptor:
         print("\n=== CONFIGURATION ANALYSIS ===")
         
         if isinstance(data, dict):
+            print(f"Total keys: {len(data)}")
+            
             if 'Version' in data:
-                print(f"Version: {data['Version']}")
+                version = data['Version']
+                print(f"Version: {version} (encrypted: {self._looks_encrypted(version)})")
             
             if 'Servers' in data:
-                print(f"Number of Servers: {len(data['Servers'])}")
-                for i, server in enumerate(data['Servers'][:3]):  # Show first 3
-                    print(f"  Server {i+1}: {server.get('Name', 'Unknown')}")
-                    if i >= 2 and len(data['Servers']) > 3:
-                        print(f"    ... and {len(data['Servers']) - 3} more servers")
-                        break
+                servers = data['Servers']
+                print(f"Number of Servers: {len(servers)}")
+                for i, server in enumerate(servers[:2]):  # Show first 2
+                    print(f"  Server {i+1}:")
+                    print(f"    Name: {server.get('Name', 'Unknown')}")
+                    print(f"    Flag: {server.get('Flag', 'Unknown')}")
+                    # Count encrypted fields
+                    encrypted_count = sum(1 for v in server.values() if isinstance(v, str) and self._looks_encrypted(v))
+                    print(f"    Encrypted fields: {encrypted_count}/{len(server)}")
             
             if 'Tweaks' in data:
-                print(f"Number of Tweaks: {len(data['Tweaks'])}")
-                for i, tweak in enumerate(data['Tweaks'][:3]):  # Show first 3
+                tweaks = data['Tweaks']
+                print(f"Number of Tweaks: {len(tweaks)}")
+                for i, tweak in enumerate(tweaks[:2]):  # Show first 2
                     print(f"  Tweak {i+1}: {tweak.get('Name', 'Unknown')}")
-                    if i >= 2 and len(data['Tweaks']) > 3:
-                        print(f"    ... and {len(data['Tweaks']) - 3} more tweaks")
+            
+            # Show sample of encrypted fields
+            encrypted_fields = []
+            for key, value in data.items():
+                if isinstance(value, str) and self._looks_encrypted(value):
+                    encrypted_fields.append(key)
+                    if len(encrypted_fields) >= 5:
                         break
             
-            # Show all keys for debugging
-            print(f"All keys: {list(data.keys())}")
+            if encrypted_fields:
+                print(f"Sample encrypted fields: {encrypted_fields}")
         else:
             print(f"Data type: {type(data)}")
-            print(f"Data preview: {str(data)[:200]}...")
 
 def main():
     print("HexXVPN Configuration Decryptor")
@@ -364,9 +426,7 @@ def main():
     
     if not CRYPTO_AVAILABLE:
         print("❌ Crypto library not available!")
-        print("Installing required library...")
-        os.system("pip install pycryptodome")
-        print("Please run the script again.")
+        print("Please install pycryptodome: pip install pycryptodome")
         return
     
     decryptor = HexXVPNDecryptor()
@@ -400,36 +460,22 @@ def main():
                 version = decrypted_data.get('Version', 'N/A')
                 print(f"Version: {version}")
             
-            # Show some decrypted values
-            encrypted_count = 0
-            decrypted_count = 0
+            if 'Servers' in decrypted_data:
+                servers = decrypted_data['Servers']
+                print(f"Servers: {len(servers)}")
+                if servers:
+                    first_server = servers[0]
+                    print(f"First Server: {first_server.get('Name', 'N/A')}")
             
-            def count_fields(obj):
-                nonlocal encrypted_count, decrypted_count
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, str) and decryptor._looks_encrypted(v):
-                            encrypted_count += 1
-                        count_fields(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        count_fields(item)
-            
-            count_fields(encrypted_data)
-            print(f"Encrypted fields found: {encrypted_count}")
+            if 'Tweaks' in decrypted_data:
+                tweaks = decrypted_data['Tweaks']
+                print(f"Tweaks: {len(tweaks)}")
             
     except FileNotFoundError:
         print("❌ encrypted_config.json not found!")
-        print("Please download the configuration first.")
+        print("Please download the configuration first using: ./hexvpn_decryptor.sh download")
     except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON format in encrypted_config.json: {e}")
-        print("Trying to read as raw text...")
-        try:
-            with open('encrypted_config.json', 'r', encoding='utf-8') as f:
-                content = f.read()
-            print(f"File content (first 500 chars): {content[:500]}")
-        except Exception as e2:
-            print(f"Error reading file: {e2}")
+        print(f"❌ Invalid JSON format: {e}")
     except Exception as e:
         print(f"❌ Error during decryption: {str(e)}")
         import traceback
@@ -458,13 +504,7 @@ install_crypto_lib() {
         return 0
     fi
     
-    print_warning "pycryptodome installation failed, trying pycrypto..."
-    if pip install pycrypto; then
-        print_status "pycrypto installed successfully"
-        return 0
-    fi
-    
-    print_error "Failed to install crypto libraries"
+    print_error "Failed to install crypto library"
     return 1
 }
 
@@ -473,120 +513,76 @@ show_file_info() {
     echo
     print_info "=== FILE INFORMATION ==="
     
-    if [ -f "raw_response.txt" ]; then
-        local raw_size=$(wc -c < raw_response.txt)
-        print_info "raw_response.txt: $raw_size bytes"
-    fi
+    for file in raw_response.txt encrypted_config.json decrypted_config.json decrypted_raw.txt decompressed.bin; do
+        if [ -f "$file" ]; then
+            local size=$(wc -c < "$file")
+            print_info "$file: $size bytes"
+        fi
+    done
     
     if [ -f "encrypted_config.json" ]; then
-        local enc_size=$(wc -c < encrypted_config.json)
-        print_info "encrypted_config.json: $enc_size bytes"
-        
-        # Show preview of encrypted content
         echo
-        print_info "=== ENCRYPTED CONTENT PREVIEW ==="
+        print_info "=== ENCRYPTED CONFIG PREVIEW ==="
         python3 -c "
 import json
 try:
     with open('encrypted_config.json', 'r') as f:
         data = json.load(f)
-    print('Type:', type(data))
+    print('Type:', type(data).__name__)
     if isinstance(data, dict):
         print('Keys:', list(data.keys()))
         if 'Version' in data:
-            print('Version:', data.get('Version', 'N/A'))
+            v = data['Version']
+            print(f'Version: {v} (length: {len(v)})')
         if 'Servers' in data:
-            print('Servers:', len(data.get('Servers', [])))
+            print(f'Servers: {len(data[\"Servers\"])}')
+            if data['Servers']:
+                s = data['Servers'][0]
+                print('First server keys:', list(s.keys())[:5])
         if 'Tweaks' in data:
-            print('Tweaks:', len(data.get('Tweaks', [])))
-    else:
-        print('Data:', str(data)[:200])
+            print(f'Tweaks: {len(data[\"Tweaks\"])}')
 except Exception as e:
-    print('Error reading JSON:', e)
-    try:
-        with open('encrypted_config.json', 'r') as f:
-            content = f.read()
-        print('Raw content (first 200 chars):', content[:200])
-    except Exception as e2:
-        print('Error reading file:', e2)
+    print('Error:', e)
 "
-    else
-        print_warning "encrypted_config.json: Not found"
     fi
     
     if [ -f "decrypted_config.json" ]; then
-        local dec_size=$(wc -c < decrypted_config.json)
-        print_info "decrypted_config.json: $dec_size bytes"
-        
-        # Show preview of decrypted content
         echo
-        print_info "=== DECRYPTED CONTENT PREVIEW ==="
+        print_info "=== DECRYPTED CONFIG PREVIEW ==="
         python3 -c "
 import json
 try:
     with open('decrypted_config.json', 'r') as f:
         data = json.load(f)
-    print('Version:', data.get('Version', 'N/A'))
-    print('Servers:', len(data.get('Servers', [])))
-    print('Tweaks:', len(data.get('Tweaks', [])))
-    if 'Servers' in data and data['Servers']:
-        first_server = data['Servers'][0]
-        print('First Server Name:', first_server.get('Name', 'N/A'))
-        # Show some decrypted values
-        encrypted_fields = [k for k, v in first_server.items() if isinstance(v, str) and len(v) > 20]
-        if encrypted_fields:
-            print('Encrypted fields in first server:', encrypted_fields[:3])
+    print('Type:', type(data).__name__)
+    if isinstance(data, dict):
+        if 'Version' in data:
+            print('Version:', data['Version'])
+        if 'Servers' in data:
+            servers = data['Servers']
+            print(f'Servers: {len(servers)}')
+            if servers:
+                s = servers[0]
+                print('First server:')
+                for k, v in list(s.items())[:3]:
+                    print(f'  {k}: {str(v)[:50]}...')
+        if 'Tweaks' in data:
+            tweaks = data['Tweaks']
+            print(f'Tweaks: {len(tweaks)}')
+            if tweaks:
+                t = tweaks[0]
+                print('First tweak:', t.get('Name', 'Unknown'))
 except Exception as e:
     print('Error:', e)
 "
-    else
-        print_warning "decrypted_config.json: Not found"
     fi
 }
 
 # Cleanup files
 cleanup_files() {
     print_info "Cleaning up temporary files..."
-    rm -f raw_response.txt encrypted_config.json decrypted_config.json hexvpn_decrypt.py extract_json.py
+    rm -f raw_response.txt encrypted_config.json decrypted_config.json decrypted_raw.txt decompressed.bin hexvpn_decrypt.py
     print_status "Cleanup completed"
-}
-
-# Direct download attempt with different methods
-direct_download() {
-    print_info "Trying direct download methods..."
-    
-    # Method 1: Simple curl with headers
-    print_info "Method 1: Direct curl download"
-    curl -s -H "Accept: application/json" -o encrypted_config.json "$HEXXVPN_URL"
-    
-    if [ -f "encrypted_config.json" ] && [ -s "encrypted_config.json" ]; then
-        local size=$(wc -c < encrypted_config.json)
-        print_status "Download successful - Size: $size bytes"
-        return 0
-    fi
-    
-    # Method 2: Python requests
-    print_info "Method 2: Python requests download"
-    python3 -c "
-import requests
-try:
-    response = requests.get('$HEXXVPN_URL', headers={'Accept': 'application/json'})
-    with open('encrypted_config.json', 'w') as f:
-        f.write(response.text)
-    print(f'Downloaded {len(response.text)} characters')
-    print('First 200 chars:', response.text[:200])
-except Exception as e:
-    print(f'Error: {e}')
-"
-    
-    if [ -f "encrypted_config.json" ] && [ -s "encrypted_config.json" ]; then
-        local size=$(wc -c < encrypted_config.json)
-        print_status "Download successful - Size: $size bytes"
-        return 0
-    fi
-    
-    print_error "All download methods failed"
-    return 1
 }
 
 # Main execution
@@ -601,15 +597,11 @@ main() {
         "download")
             download_config
             ;;
-        "direct")
-            direct_download
-            ;;
         "decrypt")
             if [ ! -f "encrypted_config.json" ]; then
                 download_config
             fi
             create_decrypt_script
-            install_crypto_lib
             python3 hexvpn_decrypt.py
             show_file_info
             ;;
@@ -628,12 +620,11 @@ main() {
             show_file_info
             ;;
         *)
-            echo "Usage: $0 {install|download|direct|decrypt|clean|info|all}"
+            echo "Usage: $0 {install|download|decrypt|clean|info|all}"
             echo
             echo "Commands:"
             echo "  install  - Install dependencies only"
-            echo "  download - Download configuration (with HTML extraction)"
-            echo "  direct   - Direct download attempt"
+            echo "  download - Download and process configuration"
             echo "  decrypt  - Decrypt downloaded configuration"
             echo "  clean    - Clean up generated files"
             echo "  info     - Show file information"
@@ -642,7 +633,6 @@ main() {
             echo "Examples:"
             echo "  $0 all        # Complete process"
             echo "  $0 download   # Download config only"
-            echo "  $0 direct     # Direct download attempt"
             echo "  $0 decrypt    # Decrypt existing config"
             ;;
     esac
