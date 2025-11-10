@@ -1,256 +1,433 @@
-
 #!/bin/bash
-# HexXVPN Encryption Diagnostic
+# HexXVPN Configuration Decryptor
+# GitHub: https://github.com/MullaDev/HexXVPN-Decryptor
 # Author: MullaDev
 
 set -e
 
-# Colors
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-print_status() { echo -e "${GREEN}[+]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_error() { echo -e "${RED}[-]${NC} $1"; }
-print_info() { echo -e "${BLUE}[*]${NC} $1"; }
+# Print colored output
+print_status() {
+    echo -e "${GREEN}[+]${NC} $1"
+}
 
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[-]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[*]${NC} $1"
+}
+
+# Banner
 show_banner() {
     echo -e "${BLUE}"
     echo "=========================================="
-    echo "     HexXVPN Encryption Diagnostic"
+    echo "      HexXVPN Configuration Decryptor"
     echo "           GitHub: MullaDev"
     echo "=========================================="
     echo -e "${NC}"
 }
 
-create_diagnostic_script() {
-    cat > diagnostic.py << 'EOF'
+# Check dependencies
+check_dependencies() {
+    print_info "Checking dependencies..."
+    
+    if ! command -v python3 &> /dev/null; then
+        print_error "Python3 not found!"
+        exit 1
+    fi
+    
+    if ! python3 -c "from Crypto.Cipher import AES" &> /dev/null; then
+        print_info "Installing pycryptodome..."
+        pip install pycryptodome
+    fi
+    
+    print_status "Dependencies checked"
+}
+
+# Create the main decryption script
+create_decrypt_script() {
+    cat > hexvpn_decrypt.py << 'PYTHON_EOF'
+#!/usr/bin/env python3
+"""
+HexXVPN Configuration Decryptor
+Decrypts HexXVPN configuration using AES-CBC with password 'HexXVPNPass'
+"""
+
+import json
+import base64
+import hashlib
+import sys
+import os
+
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import unpad
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+
+class HexXVPNDecryptor:
+    def __init__(self, password="HexXVPNPass"):
+        self.password = password
+        # Fixed IV from decompiled code
+        self.iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 
+                         0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
+        
+    def decrypt_aes_cbc(self, encrypted_text):
+        """Decrypt AES-CBC encrypted text"""
+        if not CRYPTO_AVAILABLE:
+            return f"[ERROR: Crypto library not available] - {encrypted_text}"
+            
+        try:
+            # Generate key using MD5
+            key = hashlib.md5(self.password.encode('utf-8')).digest()
+            
+            # Decode Base64
+            encrypted_bytes = base64.b64decode(encrypted_text)
+            
+            # Create AES cipher
+            cipher = AES.new(key, AES.MODE_CBC, self.iv)
+            
+            # Decrypt
+            decrypted = cipher.decrypt(encrypted_bytes)
+            
+            # Remove padding
+            try:
+                decrypted = unpad(decrypted, AES.block_size)
+            except ValueError:
+                # Manual padding removal as fallback
+                padding_length = decrypted[-1]
+                if 0 < padding_length <= 16:
+                    decrypted = decrypted[:-padding_length]
+                else:
+                    # Try to decode without removing padding
+                    pass
+            
+            return decrypted.decode('utf-8', errors='ignore')
+            
+        except Exception as e:
+            return f"[DECRYPTION_ERROR: {str(e)}] - {encrypted_text}"
+    
+    def decrypt_json(self, data):
+        """Recursively decrypt all encrypted fields in JSON"""
+        if isinstance(data, dict):
+            decrypted_data = {}
+            for key, value in data.items():
+                if isinstance(value, str) and self._looks_encrypted(value):
+                    decrypted_value = self.decrypt_aes_cbc(value)
+                    decrypted_data[key] = decrypted_value
+                    if not decrypted_value.startswith("[DECRYPTION_ERROR"):
+                        print(f"  ✅ {key}")
+                    else:
+                        print(f"  ❌ {key}: {decrypted_value}")
+                else:
+                    decrypted_data[key] = self.decrypt_json(value)
+            return decrypted_data
+        
+        elif isinstance(data, list):
+            return [self.decrypt_json(item) for item in data]
+        
+        else:
+            return data
+    
+    def _looks_encrypted(self, text):
+        """Check if text looks like encrypted Base64"""
+        if not isinstance(text, str):
+            return False
+        if len(text) < 10:
+            return False
+        try:
+            # Check if it's valid Base64
+            decoded = base64.b64decode(text)
+            return True
+        except:
+            return False
+    
+    def analyze_config(self, data):
+        """Analyze the configuration structure"""
+        print("\n=== CONFIGURATION ANALYSIS ===")
+        
+        if isinstance(data, dict):
+            print(f"Total keys: {len(data)}")
+            
+            # Count encrypted fields
+            encrypted_count = 0
+            total_fields = 0
+            
+            def count_encrypted(obj):
+                nonlocal encrypted_count, total_fields
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        total_fields += 1
+                        if isinstance(value, str) and self._looks_encrypted(value):
+                            encrypted_count += 1
+                        count_encrypted(value)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        count_encrypted(item)
+            
+            count_encrypted(data)
+            print(f"Encrypted fields: {encrypted_count}/{total_fields}")
+            
+            if 'Version' in data:
+                version = data['Version']
+                print(f"Version: {version[:50]}... (encrypted: {self._looks_encrypted(version)})")
+            
+            if 'Servers' in data:
+                servers = data['Servers']
+                print(f"Number of Servers: {len(servers)}")
+                if servers:
+                    server = servers[0]
+                    encrypted_server_fields = sum(1 for v in server.values() if isinstance(v, str) and self._looks_encrypted(v))
+                    print(f"First server - Encrypted fields: {encrypted_server_fields}/{len(server)}")
+                    print(f"First server name: {server.get('Name', 'Unknown')}")
+            
+            if 'Tweaks' in data:
+                tweaks = data['Tweaks']
+                print(f"Number of Tweaks: {len(tweaks)}")
+                if tweaks:
+                    tweak = tweaks[0]
+                    print(f"First tweak name: {tweak.get('Name', 'Unknown')}")
+
+def main():
+    print("HexXVPN Configuration Decryptor")
+    print("================================\n")
+    
+    if not CRYPTO_AVAILABLE:
+        print("❌ Crypto library not available!")
+        print("Please install pycryptodome: pip install pycryptodome")
+        return
+    
+    decryptor = HexXVPNDecryptor()
+    
+    # Check for encrypted config file
+    config_file = "encrypted_config.json"
+    
+    if not os.path.exists(config_file):
+        print(f"❌ {config_file} not found!")
+        print("Please make sure encrypted_config.json exists in the same directory")
+        return
+    
+    print(f"📁 Using configuration file: {config_file}")
+    
+    try:
+        # Read encrypted config
+        with open(config_file, 'r', encoding='utf-8') as f:
+            encrypted_data = json.load(f)
+        
+        print("📥 Loaded encrypted configuration")
+        print("🔓 Starting decryption process...\n")
+        
+        # Analyze before decryption
+        decryptor.analyze_config(encrypted_data)
+        
+        print("\n🔄 Decrypting fields...")
+        # Decrypt the entire JSON
+        decrypted_data = decryptor.decrypt_json(encrypted_data)
+        
+        # Save decrypted config
+        with open('decrypted_config.json', 'w', encoding='utf-8') as f:
+            json.dump(decrypted_data, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✅ Decryption completed!")
+        print("💾 Decrypted configuration saved to: decrypted_config.json")
+        
+        # Show summary
+        print("\n=== DECRYPTION SUMMARY ===")
+        if isinstance(decrypted_data, dict):
+            if 'Version' in decrypted_data:
+                version = decrypted_data.get('Version', 'N/A')
+                print(f"Version: {version}")
+            
+            if 'Servers' in decrypted_data:
+                servers = decrypted_data['Servers']
+                print(f"Servers: {len(servers)}")
+                if servers:
+                    first_server = servers[0]
+                    print(f"First Server: {first_server.get('Name', 'N/A')}")
+            
+            if 'Tweaks' in decrypted_data:
+                tweaks = decrypted_data['Tweaks']
+                print(f"Tweaks: {len(tweaks)}")
+                if tweaks:
+                    first_tweak = tweaks[0]
+                    print(f"First Tweak: {first_tweak.get('Name', 'N/A')}")
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON format in {config_file}: {e}")
+    except Exception as e:
+        print(f"❌ Error during decryption: {str(e)}")
+
+if __name__ == "__main__":
+    main()
+PYTHON_EOF
+
+    chmod +x hexvpn_decrypt.py
+    print_status "Decryption script created"
+}
+
+# Show file information
+show_file_info() {
+    echo
+    print_info "=== FILE INFORMATION ==="
+    
+    for file in encrypted_config.json decrypted_config.json; do
+        if [ -f "$file" ]; then
+            local size=$(wc -c < "$file")
+            print_info "$file: $size bytes"
+        else
+            print_warning "$file: Not found"
+        fi
+    done
+}
+
+# Cleanup files
+cleanup_files() {
+    print_info "Cleaning up temporary files..."
+    rm -f decrypted_config.json hexvpn_decrypt.py
+    print_status "Cleanup completed"
+}
+
+# Test decryption on a single field
+test_decryption() {
+    print_info "Testing decryption on sample fields..."
+    
+    cat > test_decrypt.py << 'PYTHON_EOF'
 #!/usr/bin/env python3
 import base64
 import hashlib
-import json
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-import binascii
 
-def test_encryption_methods():
-    print("Testing different encryption methods...")
-    print("=" * 60)
+def test_decrypt():
+    password = "HexXVPNPass"
+    iv = bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 
+                0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE])
     
-    # Test data from your config
+    # Generate key using MD5
+    key = hashlib.md5(password.encode('utf-8')).digest()
+    
+    # Test samples from your config
     test_cases = [
-        ("vVF0rpq7bdVAa3gsYPi/wg==", "Empty/Default"),
-        ("9W9iNnW3e3LUB55xDV3Bpg==", "Username/Password"), 
+        ("vVF0rpq7bdVAa3gsYPi/wg==", "Empty/Default value"),
+        ("9W9iNnW3e3LUB55xDV3Bpg==", "Username/Password"),
         ("Ca4qH95HzbNE4huWD6wgFg==", "Version"),
         ("wQNWMW1rPgOA83ko7tJLpg==", "Category")
     ]
     
-    methods = [
-        {
-            "name": "AES-CBC with HexXVPNPass MD5",
-            "key": hashlib.md5(b"HexXVPNPass").digest(),
-            "iv": bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE]),
-            "mode": AES.MODE_CBC
-        },
-        {
-            "name": "AES-CBC with different password",
-            "key": hashlib.md5(b"hexxvpn").digest(),
-            "iv": bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE]),
-            "mode": AES.MODE_CBC
-        },
-        {
-            "name": "AES-ECB with HexXVPNPass",
-            "key": hashlib.md5(b"HexXVPNPass").digest(),
-            "iv": None,
-            "mode": AES.MODE_ECB
-        }
-    ]
+    print("Testing AES-CBC decryption with password 'HexXVPNPass'")
+    print("=" * 50)
     
-    for method in methods:
-        print(f"\n🔍 Testing: {method['name']}")
-        print("-" * 40)
-        
-        success = 0
-        for encrypted_b64, description in test_cases:
-            try:
-                encrypted = base64.b64decode(encrypted_b64)
-                
-                if method['mode'] == AES.MODE_CBC:
-                    cipher = AES.new(method['key'], method['mode'], method['iv'])
-                else:
-                    cipher = AES.new(method['key'], method['mode'])
-                
-                decrypted = cipher.decrypt(encrypted)
-                
-                # Try padding removal
-                try:
-                    decrypted = unpad(decrypted, AES.block_size)
-                except:
-                    # Try manual padding
-                    if len(decrypted) > 0:
-                        last_byte = decrypted[-1]
-                        if 0 < last_byte <= 16 and all(b == last_byte for b in decrypted[-last_byte:]):
-                            decrypted = decrypted[:-last_byte]
-                
-                result = decrypted.decode('utf-8', errors='ignore')
-                
-                # Check if result looks reasonable
-                is_reasonable = (
-                    len(result) > 0 and 
-                    not any(c in result for c in ['\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07']) and
-                    all(32 <= ord(c) <= 126 for c in result[:min(10, len(result))])
-                )
-                
-                status = "✅" if is_reasonable else "❌"
-                print(f"{status} {description}: '{result}'")
-                if is_reasonable:
-                    success += 1
-                    
-            except Exception as e:
-                print(f"❌ {description}: Error - {e}")
-        
-        print(f"Results: {success}/{len(test_cases)} reasonable outputs")
-
-def analyze_encrypted_fields():
-    print(f"\n\n📊 Analyzing encrypted fields structure...")
-    print("=" * 60)
-    
-    try:
-        with open('encrypted_config.json', 'r') as f:
-            data = json.load(f)
-        
-        # Analyze field patterns
-        field_stats = {}
-        
-        def analyze_object(obj, path=""):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    current_path = f"{path}.{k}" if path else k
-                    if isinstance(v, str) and len(v) > 10:
-                        try:
-                            decoded = base64.b64decode(v)
-                            field_stats[current_path] = {
-                                'length': len(v),
-                                'decoded_length': len(decoded),
-                                'is_multiple_16': len(decoded) % 16 == 0,
-                                'sample': v[:20] + "..." if len(v) > 20 else v
-                            }
-                        except:
-                            pass
-                    analyze_object(v, current_path)
-            elif isinstance(obj, list):
-                for i, item in enumerate(obj):
-                    analyze_object(item, f"{path}[{i}]")
-        
-        analyze_object(data)
-        
-        print("Field analysis:")
-        for field, stats in list(field_stats.items())[:10]:  # Show first 10
-            print(f"  {field}:")
-            print(f"    Length: {stats['length']} chars, Decoded: {stats['decoded_length']} bytes")
-            print(f"    Multiple of 16: {stats['is_multiple__16']}")
-            print(f"    Sample: {stats['sample']}")
+    success_count = 0
+    for i, (encrypted, description) in enumerate(test_cases):
+        try:
+            encrypted_bytes = base64.b64decode(encrypted)
+            cipher = AES.new(key, AES.MODE_CBC, iv)
+            decrypted = cipher.decrypt(encrypted_bytes)
             
-    except Exception as e:
-        print(f"Error analyzing: {e}")
-
-def check_for_common_patterns():
-    print(f"\n\n🕵️ Checking for common encryption patterns...")
-    print("=" * 60)
-    
-    common_passwords = ["HexXVPNPass", "hexxvpn", "HexXVPN", "vpn", "password", "123456"]
-    common_ivs = [
-        bytes([0x1, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE]),
-        bytes([0] * 16),
-        bytes([1] * 16),
-        hashlib.md5(b"HexXVPNPass").digest()[:16]
-    ]
-    
-    test_data = "9W9iNnW3e3LUB55xDV3Bpg=="  # Username field
-    
-    for password in common_passwords:
-        for iv in common_ivs:
+            # Try to remove padding
             try:
-                # Try different key derivation methods
-                keys_to_try = [
-                    hashlib.md5(password.encode()).digest(),
-                    hashlib.sha256(password.encode()).digest()[:16],  # AES-128
-                    hashlib.sha256(password.encode()).digest()[:32],  # AES-256
-                    password.encode().ljust(16, b'\0')[:16],  # Padding
-                    password.encode().ljust(32, b'\0')[:32]   # Padding for AES-256
-                ]
-                
-                for key in keys_to_try:
-                    try:
-                        encrypted = base64.b64decode(test_data)
-                        cipher = AES.new(key, AES.MODE_CBC, iv)
-                        decrypted = cipher.decrypt(encrypted)
-                        
-                        # Try to remove padding
-                        try:
-                            decrypted = unpad(decrypted, AES.block_size)
-                        except:
-                            pass
-                        
-                        result = decrypted.decode('utf-8', errors='ignore')
-                        
-                        # Check if it looks like real data
-                        if (len(result) >= 3 and 
-                            all(32 <= ord(c) <= 126 for c in result) and
-                            not any(c in result for c in ['\x00', '\x01', '\x02'])):
-                            
-                            print(f"🎯 Potential match!")
-                            print(f"   Password: {password}")
-                            print(f"   Key: {binascii.hexlify(key).decode()}")
-                            print(f"   IV: {binascii.hexlify(iv).decode()}")
-                            print(f"   Result: '{result}'")
-                            return
-                            
-                    except Exception:
-                        continue
-                        
-            except Exception as e:
-                continue
+                decrypted = unpad(decrypted, AES.block_size)
+            except:
+                # Manual padding removal
+                padding_length = decrypted[-1]
+                if 0 < padding_length <= 16:
+                    decrypted = decrypted[:-padding_length]
+            
+            result = decrypted.decode('utf-8', errors='ignore')
+            print(f"Test {i+1} ({description}):")
+            print(f"   Input:  {encrypted}")
+            print(f"   Output: '{result}'")
+            
+            # Check if result looks reasonable
+            is_reasonable = (
+                len(result) > 0 and 
+                all(32 <= ord(c) <= 126 for c in result) and
+                not any(c in result for c in ['\x00', '\x01', '\x02', '\x03', '\x04'])
+            )
+            
+            if is_reasonable:
+                print(f"   Status: ✅ Reasonable output")
+                success_count += 1
+            else:
+                print(f"   Status: ❌ Garbled output")
+            
+        except Exception as e:
+            print(f"Test {i+1} ({description}) failed: {e}")
     
-    print("No common patterns found with basic methods")
+    print("=" * 50)
+    print(f"Results: {success_count}/{len(test_cases)} reasonable outputs")
+    
+    if success_count == 0:
+        print("\n💡 All tests produced garbled output!")
+        print("This means the encryption parameters are likely wrong.")
+        print("Possible issues:")
+        print("  - Wrong password")
+        print("  - Wrong IV")
+        print("  - Wrong algorithm")
+        print("  - Wrong key derivation method")
 
 if __name__ == "__main__":
-    test_encryption_methods()
-    analyze_encrypted_fields() 
-    check_for_common_patterns()
-    
-    print(f"\n💡 Recommendations:")
-    print("1. The current method produces garbled output - encryption parameters are wrong")
-    print("2. Need to analyze the actual APK more carefully")
-    print("3. Might need to hook into the running app to see real decryption")
-    print("4. Could be using a different algorithm (ChaCha20, custom cipher, etc.)")
-EOF
+    test_decrypt()
+PYTHON_EOF
 
-    chmod +x diagnostic.py
-    print_status "Diagnostic script created"
+    python3 test_decrypt.py
+    rm -f test_decrypt.py
 }
 
+# Main execution
 main() {
     show_banner
     
     case "${1:-}" in
-        "run")
-            create_diagnostic_script
-            python3 diagnostic.py
+        "install")
+            check_dependencies
+            ;;
+        "decrypt")
+            check_dependencies
+            create_decrypt_script
+            python3 hexvpn_decrypt.py
+            show_file_info
+            ;;
+        "test")
+            check_dependencies
+            test_decryption
             ;;
         "clean")
-            rm -f diagnostic.py
-            print_status "Cleaned up"
+            cleanup_files
+            ;;
+        "info")
+            show_file_info
             ;;
         *)
-            echo "Usage: $0 {run|clean}"
-            echo "  run   - Run encryption diagnostic"
-            echo "  clean - Clean up diagnostic files"
+            echo "Usage: $0 {install|decrypt|test|clean|info}"
+            echo
+            echo "Commands:"
+            echo "  install - Install dependencies"
+            echo "  decrypt - Decrypt the configuration"
+            echo "  test    - Test decryption on sample fields"
+            echo "  clean   - Clean up generated files"
+            echo "  info    - Show file information"
+            echo
+            echo "Make sure encrypted_config.json exists in the same directory"
             ;;
     esac
 }
 
+# Run main function with all arguments
 main "$@"
+EOF
+
+chmod +x hexvpn_decryptor.sh
