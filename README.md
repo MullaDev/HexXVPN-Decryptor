@@ -1,25 +1,40 @@
 # HexXVPN Configuration Decryptor
 
-A tool to decrypt HexXVPN VPN configuration files downloaded from their servers.
+⚠️ **STATUS: DECRYPTION NOT WORKING PROPERLY**
 
-## Features
+This tool attempts to decrypt HexXVPN configuration files, but the current implementation produces garbled output.
 
-- 🔓 Decrypts HexXVPN AES-CBC encrypted configurations
-- 📥 Automatic configuration download
-- 🔍 Configuration analysis and preview
-- 🐍 Pure Python implementation
-- 📱 Termux compatible
+## Current Status
+
+- ❌ **Decryption is NOT working correctly**
+- ❌ Output shows garbled text like `axk@72b`, `"GuArHAH`, etc.
+- ❌ These are NOT properly decrypted values
+- ❌ The encryption parameters used are incorrect
+
+## Problem
+
+The current implementation uses:
+- Password: `HexXVPNPass`
+- IV: Fixed bytes from decompiled code
+- Algorithm: AES-CBC
+
+However, these parameters produce garbage output, meaning the actual encryption method used by HexXVPN is different.
+
+## Files
+
+- `encrypted_config.json` - Original encrypted configuration
+- `hexvpn_decryptor.sh` - Main decryption script (produces garbage output)
+- `diagnostic.sh` - Diagnostic tool to analyze encryption
+- `quick_decrypt.py` - Quick decryption attempt
 
 ## Usage
 
-### Basic Usage
 ```bash
-# Clone the repository
-git clone https://github.com/MullaDev/HexXVPN-Decryptor.git
-cd HexXVPN-Decryptor
+# Test current decryption (will show garbled output)
+./hexvpn_decryptor.sh test
 
-# Make executable
-chmod +x hexvpn_decryptor.sh
+# Run diagnostic to analyze the encryption
+./diagnostic.sh run
 
-# Run complete process
-./hexvpn_decryptor.sh all
+# Attempt decryption (produces garbage)
+./hexvpn_decryptor.sh decrypt
